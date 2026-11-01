@@ -1,6 +1,6 @@
-/* Wifimanager-FS-preferences.ino */ 
 /* Simple Web-server on ESP32C3 for remote monitoring purpose */
-/* for debug via serial switch Tools/USB CDC On Boot: "Enable" */
+/* 2026.11.01 User`s choice of sensor type (Thanks DeepSeek for idea of realisation) */
+/* 2026.10.31 First git commit */
   
 // https://arduino-tex.ru/news/18/urok-2-podklyuchaem-dht11-dht22-k-esp32-esp8266-pokazanie-na.html
 // https://habr.com/ru/companies/otus/articles/894174/
@@ -24,7 +24,7 @@ This data persists even through system restarts and power loss events.
 Additionally, a feature has been incorporated to allow resetting of this memory by holding down the BOOT button for 10 seconds
 (or 3 seconds for a standard reset).
 
-Important note:https://github.com/me-no-dev/ESPAsyncWebServer/issues/1434?ysclid=macczn5bt5517904102
+Important note:https://github.com/me-no-dev/ESPAsyncWebServer/issues/1434
 */    
            
 //#include <Arduino.h>
@@ -38,25 +38,25 @@ const int ONBOARD_LED   = 8;
 const int ONBOARD_BTN   = 9;
 const int SENSOR_PIN    = 4;
 
-int buttonState;                  // Boot button state
-unsigned long debounceDelay = 50; // debounce delay on push Boot dutton
+/* for debug via serial switch Tools/USB CDC On Boot: "Enable" */
+const bool DEBUG        = false;  // Print debugging info via serial port
 
-//------------------------------- DHT --------------------------------
-//#include <DHT.h>                     // https://github.com/adafruit/DHT-sensor-library
-// Uncomment one of the lines below for whatever DHT sensor type you're using!
-//#define SENSOR_TYPE DHT11    // DHT 11
-//#define SENSOR_TYPE DHT21    // DHT 21 (AM2301)
-//#define SENSOR_TYPE DHT22    // DHT 22  (AM2302), AM2321
-//DHT dht(SENSOR_PIN, SENSOR_TYPE);
-//------------------------------- DHT --------------------------------
+int buttonState;                  // Boot button state
+unsigned long debounceDelay = 50; // debounce delay on push Boot button
+
+// Important! Sensors assigned to the one pin!
 //----------------------------- DS18B20 ------------------------------
-// Uncomment the lines below for using Dallas DS18B20 sensor!
-// Important! Comment all lines for DHT because both sensors assigned to the one pin!
 #include <OneWire.h>               // https://github.com/PaulStoffregen/OneWire
 #include <DallasTemperature.h>     // https://github.com/milesburton/Arduino-Temperature-Control-Library
 OneWire oneWire(SENSOR_PIN);
 DallasTemperature ds(&oneWire);
 //---------------------------- DS18B20 ------------------------------
+//------------------------------- DHT --------------------------------
+#include <DHT.h>                  // https://github.com/adafruit/DHT-sensor-library
+DHT dht11(SENSOR_PIN, DHT11);
+DHT dht21(SENSOR_PIN, DHT21);
+DHT dht22(SENSOR_PIN, DHT22);
+//------------------------------- DHT --------------------------------
                      
 float temperature;
 String sTemperature = "--";
@@ -66,13 +66,15 @@ String ssid             = "";
 String pass             = "";
 String ip               = "";
 String gateway          = "";
+String sensor           = "";
 String narod            = "";
 Preferences preferences;
 
 AsyncWebServer server(80); // Create AsyncWebServer object on port 80
+// IP address WebServer`s Start page 192.168.4.1
 
-IPAddress local_IP; // hardcoded localIP(192, 168, 1, 200); 
-IPAddress local_gateway; // hardcoded gateway(192, 168, 1, 1);
+IPAddress local_IP; // hardcoded localIP(192, 168, 0, 200); 
+IPAddress local_gateway; // hardcoded gateway(192, 168, 0, 1);
 IPAddress subnet(255, 255, 0, 0);
 
 const char* host = "narodmon.ru";
@@ -179,7 +181,7 @@ String processor(const String& var){
 /*--------------------- replaces placeholder -----------------------*/
 
 /*--------------------- initial server page ------------------------*/
-const char index_html3[] PROGMEM = R"rawliteral(
+const char init_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
 <html>
 <head>
@@ -211,7 +213,7 @@ button {  border: none;  color: #FEFCFB;  padding: 15px 32px;  text-align: cente
 </head>
 <body>
   <div class="topnav">
-    <h1>ESP Wi-Fi Manager</h1>
+    <h1>ESP WiFi Manager</h1>
   </div>
   <div class="content">
     <div class="card-grid">
@@ -223,9 +225,18 @@ button {  border: none;  color: #FEFCFB;  padding: 15px 32px;  text-align: cente
             <label for="pass">Password</label>
             <input type="text" id ="pass" name="pass"><br>
             <label for="ip">IP Address</label>
-            <input type="text" id ="ip" name="ip" value="192.168.1.200"><br>
+            <input type="text" id ="ip" name="ip" value="192.168.0.200"><br>
             <label for="gateway">Gateway Address</label>
-            <input type="text" id ="gateway" name="gateway" value="192.168.1.1"><br>
+            <input type="text" id ="gateway" name="gateway" value="192.168.0.1"><br>
+            <br>
+            <label for="sensor">Sensor</label>
+            <select name="sensor" id="sensor">
+              <option value="NONE">NONE</option>
+              <option value="DS18B20">DS18B20</option>
+              <option value="DHT11">DHT11</option>
+              <option value="DHT21">DHT21(AM2301)</option>
+              <option value="DHT22">DHT22(AM2302,AM2321)</option>
+            </select><br>
             <br>
             <input type="checkbox" name="narod" value="on">narodmon.ru<br>
             <input type ="submit" value ="Submit">
@@ -242,7 +253,7 @@ button {  border: none;  color: #FEFCFB;  padding: 15px 32px;  text-align: cente
 /*--------------------- initialize WiFi ----------------------------*/
 bool initWiFi() {
   if(ssid=="" || pass==""){
-    Serial.println("Undefined SSID or IP address.");
+    if (DEBUG) Serial.println("Undefined SSID or IP address.");
     return false;
   }
 
@@ -250,31 +261,31 @@ bool initWiFi() {
   local_IP.fromString(ip.c_str());
   local_gateway.fromString(gateway.c_str());
   if (!WiFi.config(local_IP, local_gateway, subnet)){
-    Serial.println("STA Failed to configure");
+    if (DEBUG) Serial.println("STA Failed to configure");
     return false;
   }
   
   //connect to your local Wi-Fi network with SSID and password
   WiFi.begin(ssid.c_str(), pass.c_str());
-  Serial.print("Connecting to ");
-  Serial.println(ssid);
+  if (DEBUG) Serial.print("Connecting to ");
+  if (DEBUG) Serial.println(ssid);
   int cnt = 10;
   //check wi-fi is connected to wi-fi network
   while(WiFi.status() != WL_CONNECTED) {
     delay(1000);
-    Serial.print(".");
+    if (DEBUG) Serial.print(".");
     cnt--;
     if (cnt < 0) {
-      Serial.println("Failed to connect.");
+      if (DEBUG) Serial.println("Failed to connect.");
       return false;
     }
   }
-  Serial.println("WiFi connected..!");
-  Serial.print("Got IP: ");
-  Serial.println(WiFi.localIP());
-  deviceName = "ESP"+WiFi.macAddress();
+  if (DEBUG) Serial.println("WiFi connected..!");
+  if (DEBUG) Serial.print("Got IP: ");
+  if (DEBUG) Serial.println(WiFi.localIP());
+  deviceName = "ESP" + WiFi.macAddress();
   deviceName.replace(":","");
-  Serial.println(deviceName);
+  if (DEBUG) Serial.println(deviceName);
   return true;
 }
 /*--------------------- initialize WiFi ----------------------------*/
@@ -288,18 +299,20 @@ void setup() {
   preferences.begin("memory", false);
   unsigned int counter = preferences.getUInt("counter", 0);  // Get the counter value, if the key does not exist, return a default value of 0
   counter++;                                                 // Increase Reset counter by 1
-  Serial.printf("Current reboots: %u\n", counter);           // Print the counter to Serial Monitor
+  if (DEBUG) Serial.printf("Current reboots: %u\n", counter);           // Print the counter to Serial Monitor
   preferences.putUInt("counter", counter);                   // Store the counter to the Preferences
   ssid    = preferences.getString("ssid","");                // get ssid, or return "" if empty
-  Serial.print("ssid:"); Serial.println(ssid);
+  if (DEBUG) Serial.print("ssid:"); Serial.println(ssid);
   pass    = preferences.getString("pass","");
   Serial.print("pass:"); Serial.println(pass);
   ip      = preferences.getString("ip","");
-  Serial.print("ip:"); Serial.println(ip);
+  if (DEBUG) Serial.print("ip:"); Serial.println(ip);
   gateway = preferences.getString("gateway","");
-  Serial.print("gateway:"); Serial.println(gateway);
+  if (DEBUG) Serial.print("gateway:"); Serial.println(gateway);
+  sensor = preferences.getString("sensor","");
+  if (DEBUG) Serial.print("sensor:"); Serial.println(sensor);
   narod = preferences.getString("narod","");
-  Serial.print("narod:"); Serial.println(narod);
+  if (DEBUG) Serial.print("narod:"); Serial.println(narod);
   preferences.end();                                         // close the Preferences
 
 
@@ -311,13 +324,23 @@ void setup() {
   // onboard LED on ESP32C3 board lights when out is off (LOW)
   
   // Initialize sensor
-//------------------------------- DHT --------------------------------
-  //dht.begin();              
-//------------------------------- DHT --------------------------------
 //----------------------------- DS18B20 ------------------------------
-  ds.begin();  
-  ds.requestTemperatures(); 
+  if (sensor ==  "DS18B20") {
+    ds.begin();  
+    ds.requestTemperatures(); 
+  }
 //----------------------------- DS18B20 ------------------------------  
+//------------------------------- DHT --------------------------------
+  else if (sensor == "DHT11") {
+    dht11.begin();  
+  }            
+  else if (sensor == "DDHT21") {
+    dht21.begin();  
+  }            
+  else if (sensor == "DHT22") {
+    dht22.begin();  
+  }            
+//------------------------------- DHT --------------------------------
 
 //------------------- setup if wifi initialized ----------------------
   if (initWiFi()) {
@@ -345,36 +368,36 @@ void setup() {
     });
 
     server.begin();
-    Serial.println("HTTP server started");
+    if (DEBUG) Serial.println("HTTP server started");
     counter = millis();
   }
 //------------------- setup if wifi initialized ----------------------
   
 //------------------- setup if wifi not initialized ------------------
   else {
-    Serial.println("Setting AP (Access Point)");
+    if (DEBUG) Serial.println("Setting AP (Access Point)");
     WiFi.softAP("ESP-WIFI-MANAGER", NULL);    // NULL sets an open Access Point
-    IPAddress IP = WiFi.softAPIP();
-    Serial.print("AP IP address: ");
-    Serial.println(IP); 
+    IPAddress IP = WiFi.softAPIP(); // IP address WebServer`s Start page 192.168.4.1
+    if (DEBUG) Serial.print("AP IP address: ");
+    if (DEBUG) Serial.println(IP); 
 
     // Web Server Root URL
     server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
-      request->send_P(200, "text/html", index_html3);
-      Serial.print("Setup page printed.");
+      request->send_P(200, "text/html", init_html);
+      if (DEBUG) Serial.print("Setup page printed.");
     });
     
     // Web Server request
     server.on("/p", HTTP_GET, [](AsyncWebServerRequest *request) {
       int paramsNr = request->params();
-      Serial.println("Get parameters");
+      if (DEBUG) Serial.println("Get parameters");
       for(int i=0;i<paramsNr;i++){
         const AsyncWebParameter* p = request->getParam(i);
         // HTTP GET ssid value
         if (p->name() == "ssid") {
           ssid = p->value().c_str();
-          Serial.print("SSID set to: ");
-          Serial.println(ssid);
+          if (DEBUG) Serial.print("SSID set to: ");
+          if (DEBUG) Serial.println(ssid);
           preferences.begin("memory", false);
           preferences.putString("ssid", ssid);
           preferences.end();
@@ -382,8 +405,8 @@ void setup() {
         // HTTP GET pass value
         if (p->name() == "pass") {
           pass = p->value().c_str();
-          Serial.print("Password set to: ");
-          Serial.println(pass);
+          if (DEBUG) Serial.print("Password set to: ");
+          if (DEBUG) Serial.println(pass);
           preferences.begin("memory", false);
           preferences.putString("pass", pass);
           preferences.end();
@@ -391,8 +414,8 @@ void setup() {
         // HTTP GET ip value
         if (p->name() == "ip") {
           ip = p->value().c_str();
-          Serial.print("IP Address set to: ");
-          Serial.println(ip);
+          if (DEBUG) Serial.print("IP Address set to: ");
+          if (DEBUG) Serial.println(ip);
           preferences.begin("memory", false);
           preferences.putString("ip", ip);
           preferences.end();
@@ -400,17 +423,26 @@ void setup() {
         // HTTP GET gateway value
         if (p->name() == "gateway") {
           gateway = p->value().c_str();
-          Serial.print("Gateway set to: ");
-          Serial.println(gateway);
+          if (DEBUG) Serial.print("Gateway set to: ");
+          if (DEBUG) Serial.println(gateway);
           preferences.begin("memory", false);
           preferences.putString("gateway", gateway);
+          preferences.end();
+        }
+        // HTTP GET sensor value
+        if (p->name() == "sensor") {
+          sensor = p->value().c_str();
+          if (DEBUG) Serial.print("Sensor set to: ");
+          if (DEBUG) Serial.println(sensor);
+          preferences.begin("memory", false);
+          preferences.putString("sensor", sensor);
           preferences.end();
         }
         // HTTP GET narod value
         if (p->name() == "narod") {
           narod = p->value().c_str();
-          Serial.print("Narod set to: ");
-          Serial.println(narod);
+          if (DEBUG) Serial.print("Narod set to: ");
+          if (DEBUG) Serial.println(narod);
           preferences.begin("memory", false);
           preferences.putString("narod", narod);
           preferences.end();
@@ -431,20 +463,31 @@ void loop() {
   if (millis() - counter > 1000) { // read temperature each 1 second
     counter = millis();
 //------------------------------- DHT --------------------------------
-    //temperature = dht.readTemperature(); // get the value of the temperature
+    if (sensor == "DHT11") {
+      temperature = dht11.readTemperature(); // get the value of the temperature
+    }
+    else if (sensor == "DHT21") {
+      temperature = dht21.readTemperature(); // get the value of the temperature
+    }
+    else if (sensor == "DHT22") {
+      temperature = dht22.readTemperature(); // get the value of the temperature
+    }
 //------------------------------- DHT --------------------------------
 //----------------------------- DS18B20 ------------------------------
-    temperature = ds.getTempCByIndex(0);
-    ds.requestTemperatures(); 
+    else if (sensor == "DS18B20") {
+      temperature = ds.getTempCByIndex(0);
+      ds.requestTemperatures(); 
 //----------------------------- DS18B20 ------------------------------
-    if (isnan(temperature)) {    
-      Serial.println("Failed to read from sensor!");
-      sTemperature = "--";
+      if (isnan(temperature)) {    
+        if (DEBUG) Serial.println("Failed to read from sensor!");
+        sTemperature = "--";
+      }
+      else {
+        //if (DEBUG) Serial.println(temperature);
+        sTemperature = String(temperature);
+      }
     }
-    else {
-      //Serial.println(temperature);
-      sTemperature = String(temperature);
-    }
+    
     if (narod == "on") publishingCounter--;
   }
   
@@ -460,17 +503,17 @@ void loop() {
     unsigned long timeout = millis();
     while (!client.connect(host, httpPort)) {
       if (millis() - timeout > 5000) {
-        Serial.print("Client timeout!");
+        if (DEBUG) Serial.print("Client timeout!");
         client.stop();
         break;
       } else {
-        Serial.print("Connection to ");
-        Serial.print(host);
-        Serial.println(" successfully!");
+        if (DEBUG) Serial.print("Connection to ");
+        if (DEBUG) Serial.print(host);
+        if (DEBUG) Serial.println(" successfully!");
         client.print(buf); // connected, send
         while (client.available()) {
           String line = client.readStringUntil('\r'); // recieve all answers and print to Serial
-          Serial.println(line);
+          if (DEBUG) Serial.println(line);
         }
         break;
       }
@@ -484,16 +527,16 @@ void loop() {
     if (digitalRead(ONBOARD_BTN) != buttonState) { //
       buttonState = digitalRead(ONBOARD_BTN);
       if (buttonState == LOW) {
-        Serial.println("Boot button pressed"); 
+        if (DEBUG) Serial.println("Boot button pressed"); 
         unsigned long  startTime = millis();
         while (digitalRead(ONBOARD_BTN) == LOW) { // still pressed
           delay(10);
         }
         if ((millis() - startTime) > 10000) { // If key pressed for more than 10secs, reset all settings
-          Serial.println("Reset NVS");
+          if (DEBUG) Serial.println("Reset NVS");
           preferences.begin("memory", false); 
           preferences.clear();                
-          Serial.println("NVS ereased!");     
+          if (DEBUG) Serial.println("NVS ereased!");     
           preferences.end(); 
           ESP.restart();                 
         }
